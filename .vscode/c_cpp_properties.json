@@ -1,0 +1,24 @@
+{
+    "configurations": [
+        {
+            "name": "Win32",
+            "includePath": [
+                "C:\\Users\\delia\\AppData\\Local\\Arduino15\\packages\\esp8266\\hardware\\esp8266\\2.7.1\\libraries\\ESP8266WebServer\\src",
+                "C:\\Users\\delia\\AppData\\Local\\Arduino15\\packages\\esp8266\\tools\\**",
+                "C:\\Users\\delia\\AppData\\Local\\Arduino15\\packages\\esp8266\\hardware\\esp8266\\2.7.1\\**",
+                "${workspaceFolder}/**",
+                "C:/Users/delia/Documents/Arduino/libraries/**",
+                "C:/Program Files (x86)/Arduino"
+            ],
+            "defines": [
+                "_DEBUG",
+                "UNICODE",
+                "_UNICODE",
+                "ESP8266"
+            ],
+            "intelliSenseMode": "${default}",
+            "forcedInclude": []
+        }
+    ],
+    "version": 4
+}
