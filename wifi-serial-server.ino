@@ -46,7 +46,7 @@ iqOqOppWNgg4HJVSrjdFWlVJku+00cmaWdUv2LT03M34W2M=
 -----END RSA PRIVATE KEY-----
 )EOF";
 
-#define SEND_SERIAL_TIME (250)
+#define SEND_SERIAL_TIME (75)
 #define ONBOARD_LED (2)
 #define ONBOARD_D6 (12)
 
@@ -164,17 +164,19 @@ void handleSerial()
 {
     digitalWrite(ONBOARD_LED, LOW);
     String body = server.arg("plain");
+    String message = "\n[" + body + "]";
     term.write(body);
     term.handle();
     if (term.lenght() > 0)
     {
-        // Serial.write("\nHas data");
+        server.sendHeader("Access-Control-Allow-Origin", "*");
         server.send(200, "application/octet-stream", term.buffer(), term.lenght());
     }
     else
     {
-        // Serial.write("\nTimeout.");
-        server.send(204, "application/octet-stream", "Timeout.");
+        message += "\n timeout";
+        server.sendHeader("Access-Control-Allow-Origin", "*");
+        server.send(204, "application/octet-stream", message);
     }
     digitalWrite(ONBOARD_LED, HIGH);
 }
@@ -202,6 +204,13 @@ void setup()
     server.getServer().setRSACert(new BearSSL::X509List(serverCert), new BearSSL::PrivateKey(serverKey));
     server.on("/", handleRoot);
     server.on("/serial", HTTP_POST, handleSerial);
+    server.on("/serial", HTTP_OPTIONS, []() {
+        server.sendHeader("Access-Control-Allow-Origin", "*");
+        server.sendHeader("Access-Control-Allow-Methods", "*");
+        server.sendHeader("Access-Control-Allow-Headers", "*");
+        server.sendHeader("Access-Control-Max-Age", "600");
+        server.send(204);
+    });
     server.on("/inline", []() {
         server.send(200, "text/plain", "this works as well");
     });
