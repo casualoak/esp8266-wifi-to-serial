@@ -1,10 +1,11 @@
-#include <Arduino.h>
-#include <ESP8266WiFi.h> //https://github.com/esp8266/Arduino
-
-//needed for library
-#include <DNSServer.h>
+#include <ESP8266WiFi.h>
+#include <WiFiClient.h>
 #include <ESP8266WebServer.h>
+#include <ESP8266mDNS.h>
+#include <ArduinoJson.h>
+#include <DNSServer.h>
 #include <ESP8266WebServerSecure.h>
+#define ESP8266
 #include <WiFiManager.h> //https://github.com/tzapu/WiFiManager
 
 BearSSL::ESP8266WebServerSecure server(443);
@@ -46,9 +47,31 @@ iqOqOppWNgg4HJVSrjdFWlVJku+00cmaWdUv2LT03M34W2M=
 -----END RSA PRIVATE KEY-----
 )EOF";
 
+const String postForms = "<html>\
+  <head>\
+    <title>ESP8266 Web Server</title>\
+    <style>\
+      body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }\
+    </style>\
+  </head>\
+  <body>\
+    <h1>Hello from ESP8266WebServerSecure!</h1><br>\
+  </body>\
+</html>";
+
 #define SEND_SERIAL_TIME (75)
 #define ONBOARD_LED (2)
 #define ONBOARD_D6 (12)
+
+enum SerialResult
+{
+    SR_SUCCESS,
+    SR_TIMEOUT,
+    SR_BUSY,
+    SR_CRC,
+    SR_ERROR,
+    SR_UNSUPPORTED_MODEL
+};
 
 class SerialTerminal
 {
@@ -60,10 +83,30 @@ public:
         Serial.begin(115200, SERIAL_8N1);
     }
 
-    void write(const String &data)
+    void writeHex(const char *line)
     {
-        Serial.write(data.c_str(), data.length());
-        resetBuffer();
+        unsigned int byteint;
+        size_t index;
+        size_t str_len = strlen(line);
+        uint8_t bytearray[str_len / 2];
+
+        // read
+        for (index = 0; index < (str_len / 2); index++)
+        {
+            sscanf(line + 2 * index, "%02x", &byteint);
+            bytearray[index] = (uint8_t)byteint;
+        }
+        Serial.write(&bytearray[0], sizeof(bytearray));
+    }
+
+    void readHex(char *output, size_t size)
+    {
+        size_t len = min(length(), size / 2);
+        uint8_t *bytearray = buffer();
+        for (int index = 0; index < len; index++)
+        {
+            sprintf(output + 2 * index, "%02X", (unsigned int)bytearray[index]);
+        }
     }
 
     void handle()
@@ -71,6 +114,9 @@ public:
         unsigned long t = millis();
         bool forceSend = false;
         bool timeout = false;
+
+        resetBuffer();
+
         while (!(timeout || forceSend))
         {
 
@@ -80,7 +126,6 @@ public:
             int available = Serial.available();
             if (available > 0 && free > 0)
             {
-                // Serial.write("\nRead bytes...");
                 int readBytes = available;
                 if (readBytes > free)
                 {
@@ -109,13 +154,56 @@ public:
         return &_buffer[0];
     }
 
-    size_t lenght()
+    size_t length()
     {
         return (_bufferWritePtr - &_buffer[0]);
     }
 
+    SerialResult getResult(const char *model)
+    {
+        if (strcmp(model, "eltrade") == 0)
+        {
+            return getResultEltrade();
+        }
+        return SR_UNSUPPORTED_MODEL;
+    }
+
+    SerialResult getResultEltrade()
+    {
+        if (length() == 0)
+            // timeout.
+            return SR_TIMEOUT;
+
+        String s = "";
+        s.concat((char *)buffer(), length());
+
+        if ((s.length() == 1) && (s[0] == 0x15))
+            // checksum.
+            return SR_CRC;
+
+        if (s.lastIndexOf(0x16) >= 0)
+        {
+            s = s.substring(s.lastIndexOf(0x16) + 1);
+            if (s.length() == 0)
+            {
+                // busy
+                return SR_BUSY;
+            }
+        }
+
+        String errors = s.substring(s.indexOf(4) + 1, s.indexOf(5));
+
+        if ((errors[0] & 0b00100000) > 1)
+            return SR_ERROR;
+
+        if ((errors[4] & 0b00100000) > 1)
+            return SR_ERROR;
+
+        return SR_SUCCESS;
+    }
+
 protected:
-    uint8_t _buffer[2058];
+    uint8_t _buffer[2048];
     uint8_t *_bufferWritePtr;
     unsigned long _lastRX;
 
@@ -133,50 +221,90 @@ protected:
 
 SerialTerminal term;
 
-void handleRoot()
+void sendError(const char *message, size_t index, const char *input, bool sendOutput)
 {
-    digitalWrite(ONBOARD_LED, LOW);
-    server.send(200, "text/plain", "Hello from esp8266 over HTTPS!");
-    digitalWrite(ONBOARD_LED, HIGH);
-}
-
-void handleNotFound()
-{
-    digitalWrite(ONBOARD_LED, LOW);
-    String message = "File Not Found\n\n";
-    message += "URI: ";
-    message += server.uri();
-    message += "\nMethod: ";
-    message += (server.method() == HTTP_GET) ? "GET" : "POST";
-    message += "\nArguments: ";
-    message += server.args();
-    message += "\n";
-    for (uint8_t i = 0; i < server.args(); i++)
-    {
-        message += server.argName(i) + ": " + server.arg(i) + "\n";
-    }
-
-    server.send(404, "text/plain", message);
-    digitalWrite(ONBOARD_LED, HIGH);
+    size_t out_length = term.length() * 2;
+    char output[out_length + 1];
+    char buffer[100 + strlen(message) + strlen(input) + out_length];
+    term.readHex(&output[0], out_length);
+    snprintf_P(
+        buffer,
+        sizeof(buffer),
+        PSTR("{\n\"result\": \"error\", \n\"error\": \"%s\", \n\"index\": \"%d\", \n\"input\": \"%s\", \n\"output\": \"%s\"\n}"),
+        message,
+        index,
+        input,
+        term.length() > 0 ? output : "");
+    server.send(400, "application/json", buffer);
 }
 
 void handleSerial()
 {
     digitalWrite(ONBOARD_LED, LOW);
-    String body = server.arg("plain");
-    String message = "\n[" + body + "]";
-    term.write(body);
-    term.handle();
-    if (term.lenght() > 0)
+
+    const size_t capacity = JSON_OBJECT_SIZE(2) + JSON_ARRAY_SIZE(400) + 60;
+    DynamicJsonDocument doc(capacity);
+    DeserializationError error = deserializeJson(doc, server.arg("plain"));
+
+    if (error)
     {
-        server.sendHeader("Access-Control-Allow-Origin", "*");
-        server.send(200, "application/octet-stream", term.buffer(), term.lenght());
+        sendError(error.c_str(), 0, "", false);
+        return;
     }
-    else
+
+    const char *model = doc["model"];
+    JsonArray array = doc["commands"];
+    SerialResult result = SR_SUCCESS;
+
+    for (int index = 0; index < array.size(); index++)
     {
-        message += "\n timeout";
-        server.sendHeader("Access-Control-Allow-Origin", "*");
-        server.send(204, "application/octet-stream", message);
+        uint8_t loop = 0;
+        const char *line = array[index];
+
+        term.writeHex(line);
+        term.handle();
+        result = term.getResult(model);
+
+        if (result == SR_TIMEOUT)
+        {
+            sendError("timeout", index, line, true);
+            break;
+        }
+
+        if (result == SR_CRC)
+        {
+            sendError("crc", index, line, true);
+            break;
+        }
+
+        // loop for busy
+        while (result == SR_BUSY && (loop++ < 3))
+        {
+            term.handle();
+            result = term.getResult(model);
+        }
+
+        if (result == SR_BUSY)
+        {
+            sendError("busy", index, line, true);
+            break;
+        }
+
+        if (result == SR_ERROR)
+        {
+            sendError("general", index, line, true);
+            break;
+        }
+
+        if (result == SR_UNSUPPORTED_MODEL)
+        {
+            sendError("unsupported", index, line, true);
+            break;
+        }
+    }
+    if (result == SR_SUCCESS)
+    {
+        server.send(200, "application/json", "{\"result\": \"OK\"");
     }
     digitalWrite(ONBOARD_LED, HIGH);
 }
@@ -191,35 +319,36 @@ void setup()
     WiFiManager wifiManager;
     wifiManager.setDebugOutput(false);
 
-    //reset saved settings
-    // wifiManager.resetSettings();
-
     //set custom ip for portal
-    //wifiManager.setAPStaticIPConfig(IPAddress(10,0,1,1), IPAddress(10,0,1,1), IPAddress(255,255,255,0));
     wifiManager.setSTAStaticIPConfig(IPAddress(192, 168, 1, 113), IPAddress(192, 168, 1, 1), IPAddress(255, 255, 255, 0));
 
     wifiManager.autoConnect("ESP-FPLink");
     configTime(3 * 3600, 0, "pool.ntp.org", "time.nist.gov");
 
     server.getServer().setRSACert(new BearSSL::X509List(serverCert), new BearSSL::PrivateKey(serverKey));
-    server.on("/", handleRoot);
+
+    server.on("/", []() {
+        server.send(200, "text/html", postForms);
+    });
+
+    server.on("/wifireset", [&wifiManager]() {
+        wifiManager.resetSettings();
+        server.send(200, "text/plain", "ok, restart");
+        ESP.restart();
+    });
+
     server.on("/serial", HTTP_POST, handleSerial);
     server.on("/serial", HTTP_OPTIONS, []() {
         server.sendHeader("Access-Control-Allow-Origin", "*");
         server.sendHeader("Access-Control-Allow-Methods", "*");
         server.sendHeader("Access-Control-Allow-Headers", "*");
-        server.sendHeader("Access-Control-Max-Age", "600");
+        server.sendHeader("Access-Control-Max-Age", "6000");
         server.send(204);
     });
-    server.on("/inline", []() {
-        server.send(200, "text/plain", "this works as well");
+
+    server.onNotFound([]() {
+        server.send(404, "text/plain", "not found.");
     });
-    server.on("/resetwifi", [&wifiManager]() {
-        wifiManager.resetSettings();
-        server.send(200, "text/plain", "ok, restart");
-        ESP.restart();
-    });
-    server.onNotFound(handleNotFound);
     server.begin();
 }
 
