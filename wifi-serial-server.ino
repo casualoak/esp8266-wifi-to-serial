@@ -304,7 +304,7 @@ void handleSerial()
     }
     if (result == SR_SUCCESS)
     {
-        server.send(200, "application/json", "{\"result\": \"OK\"");
+        server.send(200, "application/json", "{\"result\": \"OK\"}");
     }
     digitalWrite(ONBOARD_LED, HIGH);
 }
